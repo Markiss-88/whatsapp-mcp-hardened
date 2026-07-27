@@ -202,6 +202,68 @@ type SendMessageRequest struct {
 	MediaPath string `json:"media_path,omitempty"`
 }
 
+func mediaRoot() (string, error) {
+	if root := os.Getenv("WHATSAPP_MCP_MEDIA_DIR"); root != "" {
+		return root, nil
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to determine allowed media root: %v", err)
+	}
+	return filepath.Join(homeDir, "whatsapp-mcp-outbox"), nil
+}
+
+func validateMediaPath(path string) (string, error) {
+	root, err := mediaRoot()
+	if err != nil {
+		return "", err
+	}
+
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve allowed media root %q: %v", root, err)
+	}
+	if err := os.MkdirAll(root, 0755); err != nil {
+		return "", fmt.Errorf("failed to create allowed media root %q: %v", root, err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve allowed media root %q: %v", root, err)
+	}
+
+	if path == "" {
+		return "", fmt.Errorf("media path is empty; allowed media root is %q", root)
+	}
+
+	candidate, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve media path for allowed root %q: %v", root, err)
+	}
+	candidate, err = filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve media path for allowed root %q: %v", root, err)
+	}
+
+	relativePath, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate media path against allowed root %q: %v", root, err)
+	}
+	if relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("media path must be inside allowed media root %q", root)
+	}
+
+	fileInfo, err := os.Stat(candidate)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect media path for allowed root %q: %v", root, err)
+	}
+	if fileInfo.IsDir() {
+		return "", fmt.Errorf("media path must be a file inside allowed media root %q", root)
+	}
+
+	return candidate, nil
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
@@ -233,6 +295,11 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 
 	// Check if we have media to send
 	if mediaPath != "" {
+		mediaPath, err = validateMediaPath(mediaPath)
+		if err != nil {
+			return false, err.Error()
+		}
+
 		// Read media file
 		mediaData, err := os.ReadFile(mediaPath)
 		if err != nil {
@@ -346,7 +413,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			}
 		case whatsmeow.MediaDocument:
 			msg.DocumentMessage = &waProto.DocumentMessage{
-				Title:         proto.String(mediaPath[strings.LastIndex(mediaPath, "/")+1:]),
+				Title:         proto.String(filepath.Base(mediaPath)),
 				Caption:       proto.String(message),
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
@@ -553,6 +620,19 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 	return d.MediaType
 }
 
+func sanitizeDownloadFilename(filename, mediaType, messageID string) string {
+	filename = filepath.Base(filename)
+	if filename != "" && filename != "." && filename != ".." && filename != string(os.PathSeparator) {
+		return filename
+	}
+
+	filename = filepath.Base(fmt.Sprintf("%s_%s", mediaType, messageID))
+	if filename == "" || filename == "." || filename == ".." || filename == string(os.PathSeparator) {
+		return "media"
+	}
+	return filename
+}
+
 // Function to download media from a message
 func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
 	// Query the database for the message
@@ -562,7 +642,11 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	chatDirName := filepath.Base(strings.ReplaceAll(chatJID, ":", "_"))
+	if chatDirName == "" || chatDirName == "." || chatDirName == ".." || chatDirName == string(os.PathSeparator) {
+		return false, "", "", "", fmt.Errorf("invalid chat JID")
+	}
+	chatDir := fmt.Sprintf("store/%s", chatDirName)
 	localPath := ""
 
 	// Get media info from the database
@@ -579,6 +663,8 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 			return false, "", "", "", fmt.Errorf("failed to find message: %v", err)
 		}
 	}
+
+	filename = sanitizeDownloadFilename(filename, mediaType, messageID)
 
 	// Check if this is a media message
 	if mediaType == "" {
@@ -641,7 +727,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -775,7 +861,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Run server in a goroutine so it doesn't block
@@ -800,14 +886,35 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	mediaDir, err := mediaRoot()
+	if err != nil {
+		logger.Errorf("Failed to determine allowed media directory: %v", err)
+		return
+	}
+	mediaDir, err = filepath.Abs(mediaDir)
+	if err != nil {
+		logger.Errorf("Failed to resolve allowed media directory: %v", err)
+		return
+	}
+	if err := os.MkdirAll(mediaDir, 0755); err != nil {
+		logger.Errorf("Failed to create allowed media directory: %v", err)
+		return
+	}
+	mediaDir, err = filepath.EvalSymlinks(mediaDir)
+	if err != nil {
+		logger.Errorf("Failed to resolve allowed media directory: %v", err)
+		return
+	}
+	logger.Infof("Allowed media directory: %s", mediaDir)
+
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -973,7 +1080,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1095,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {

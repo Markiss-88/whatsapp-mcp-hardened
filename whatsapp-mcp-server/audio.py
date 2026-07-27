@@ -77,8 +77,12 @@ def convert_to_opus_ogg_temp(input_file, bitrate="32k", sample_rate=24000):
         FileNotFoundError: If the input file doesn't exist
         RuntimeError: If the ffmpeg conversion fails
     """
-    # Create a temporary file with .ogg extension
-    temp_file = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
+    # Create a temporary file with .ogg extension in the bridge's allowed media directory
+    media_dir = os.environ.get("WHATSAPP_MCP_MEDIA_DIR") or os.path.expanduser(
+        "~/whatsapp-mcp-outbox"
+    )
+    os.makedirs(media_dir, exist_ok=True)
+    temp_file = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False, dir=media_dir)
     temp_file.close()
     
     try:

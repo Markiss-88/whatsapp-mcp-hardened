@@ -6,6 +6,14 @@ With this you can search and read your personal Whatsapp messages (including ima
 
 It connects to your **personal WhatsApp account** directly via the Whatsapp web multidevice API (using the [whatsmeow](https://github.com/tulir/whatsmeow) library). All your messages are stored locally in a SQLite database and only sent to an LLM (such as Claude) when the agent accesses them through tools (which you control).
 
+## Security hardening (this fork)
+
+- The REST API listens on `127.0.0.1` only.
+- Outgoing media paths are restricted to an allowlisted directory and checked after resolving symlinks.
+- Downloaded attachment filenames and chat directories are sanitized to prevent path traversal.
+- Set `WHATSAPP_MCP_MEDIA_DIR` to change the allowlisted directory; the default is `~/whatsapp-mcp-outbox`.
+- Only files placed in that directory can be sent.
+
 Here's an example of what you can do when it's connected to Claude.
 
 ![WhatsApp MCP](./example-use.png)
