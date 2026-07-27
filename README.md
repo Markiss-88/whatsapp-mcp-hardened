@@ -14,6 +14,18 @@ It connects to your **personal WhatsApp account** directly via the Whatsapp web 
 - Set `WHATSAPP_MCP_MEDIA_DIR` to change the allowlisted directory; the default is `~/whatsapp-mcp-outbox`.
 - Only files placed in that directory can be sent.
 
+### If the bridge fails with `Client outdated (405)`
+
+WhatsApp rejects the client version baked into whatsmeow once it goes stale, and
+the bridge cannot connect at all. Bump the library and rebuild:
+
+```
+cd whatsapp-bridge && go get -u go.mau.fi/whatsmeow@latest && go mod tidy && go build -o whatsapp-bridge .
+```
+
+Expect API churn on the upgrade (whatsmeow has been adding a leading
+`context.Context` to methods); fix the call sites the compiler names.
+
 Here's an example of what you can do when it's connected to Claude.
 
 ![WhatsApp MCP](./example-use.png)
