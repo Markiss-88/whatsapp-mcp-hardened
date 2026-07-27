@@ -877,6 +877,25 @@ func main() {
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
 
+	pairPhoneRaw := os.Getenv("WHATSAPP_PAIR_PHONE")
+	pairPhone := ""
+	if pairPhoneRaw != "" {
+		pairPhone = strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, pairPhoneRaw)
+		if len(pairPhone) <= 6 {
+			logger.Errorf("Invalid WHATSAPP_PAIR_PHONE: a full international phone number including country code is required (for example, Singapore 6591234567)")
+			return
+		}
+		if strings.HasPrefix(pairPhone, "0") {
+			logger.Errorf("Invalid WHATSAPP_PAIR_PHONE: drop the leading trunk zero and use the country code instead (for example, Singapore 6591234567, not 091234567)")
+			return
+		}
+	}
+
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
@@ -973,11 +992,27 @@ func main() {
 			return
 		}
 
-		// Print QR code for pairing with phone
+		// Handle QR or phone-number pairing
+		pairPhoneRequested := false
 		for evt := range qrChan {
 			if evt.Event == "code" {
-				fmt.Println("\nScan this QR code with your WhatsApp app:")
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				if pairPhone != "" {
+					if pairPhoneRequested {
+						continue
+					}
+					pairPhoneRequested = true
+					pairingCode, err := client.PairPhone(context.Background(), pairPhone, true, whatsmeow.PairClientChrome, "Chrome (macOS)")
+					if err != nil {
+						logger.Errorf("Failed to request phone pairing code: %v (a 400 response usually means the client display name was rejected)", err)
+						return
+					}
+					fmt.Printf("\n=== WhatsApp pairing code: %s ===\n", pairingCode)
+					fmt.Println("WhatsApp > Settings > Linked Devices > Link a Device > Link with phone number instead")
+					fmt.Println("This code expires in about 160 seconds. Re-run the bridge to issue a new one.")
+				} else {
+					fmt.Println("\nScan this QR code with your WhatsApp app:")
+					qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				}
 			} else if evt.Event == "success" {
 				connected <- true
 				break

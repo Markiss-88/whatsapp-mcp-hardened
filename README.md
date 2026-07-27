@@ -14,6 +14,10 @@ It connects to your **personal WhatsApp account** directly via the Whatsapp web 
 - Set `WHATSAPP_MCP_MEDIA_DIR` to change the allowlisted directory; the default is `~/whatsapp-mcp-outbox`.
 - Only files placed in that directory can be sent.
 
+### Phone-number pairing
+
+Set `WHATSAPP_PAIR_PHONE` to link with a phone number instead of scanning a QR code. Use the full international number with country code, digits only, no `+`, and no leading trunk zero (for example, Singapore `6591234567`, not `091234567`). The pairing code expires in about 160 seconds; re-run the bridge to issue a new one. In WhatsApp, enter it at **Settings > Linked Devices > Link a Device > Link with phone number instead**.
+
 ### If the bridge fails with `Client outdated (405)`
 
 WhatsApp rejects the client version baked into whatsmeow once it goes stale, and
